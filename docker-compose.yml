@@ -1,0 +1,10 @@
+version: '4.27'
+services:
+  your-service:
+    image: websocket-server
+    ports:
+      - "8081:8081"
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/service-account-file.json
+    volumes:
+      - /Users/Vyshakh.Babji/Desktop/Desktop/cloud-ws-logger/wiliot-deployment-tool-bf885-aa3317c173f6.json:/etc/secrets/service-account-file.json

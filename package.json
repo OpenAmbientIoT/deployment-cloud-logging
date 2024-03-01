@@ -1,0 +1,14 @@
+{
+  "name": "websocket-server",
+  "version": "1.0.0",
+  "description": "A WebSocket server example.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@google-cloud/logging": "^11.0.0",
+    "node-jose": "^1.1.3",
+    "ws": "^7.0.0"
+  }
+}
