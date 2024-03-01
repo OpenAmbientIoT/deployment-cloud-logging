@@ -14,11 +14,13 @@ const metadata = {
 
 // Function to write an entry to Cloud Logging
 function writeToLog(severity, message) {
-    const entry = log.entry(metadata, {
-        severity: severity,
-        message: message,
-    });
-    log.write(entry).catch(console.error);
+    // const entry = log.entry(metadata, {
+    //     severity: severity,
+    //     message: message,
+    // });
+    // log.write(entry).catch(console.error);
+
+    console.log(`${severity}: ${message}`);
 }
 
 
@@ -72,7 +74,7 @@ wss.on('connection', async (ws, req) => {
     }
 
     // Event listener for messages from the client
-    ws.on('message', (message) => {
+    ws.on('message', async (message) => {
         // Assume the message type is included in the message, e.g., { type: 'error', data: 'Error details' }
         let logMessage;
         try {
@@ -81,6 +83,27 @@ wss.on('connection', async (ws, req) => {
             writeToLog('ERROR', 'Received an invalid message format');
             return;
         }
+
+        if (logMessage.type === 'reauth') {
+            const newToken = logMessage.token;
+            const validationResponse = await validateAccessToken(newToken);
+
+            if (validationResponse.isValid) {
+                writeToLog('INFO', 'Re-authentication successful');
+                // Here, update any session or connection state as necessary
+                // For example, you might associate the new token with the connection
+                ws.authToken = newToken; // Example: Storing the new token in the WebSocket object
+            } else {
+                writeToLog('ERROR', 'Re-authentication failed: Invalid token');
+                // Handle invalid token during re-authentication
+                // For example, you might choose to close the connection
+                ws.close(1008, 'Re-authentication failed: Invalid token');
+            }
+
+            return; // Skip processing this message further
+        }
+
+
 
         switch (logMessage.type) {
             case 'error':
