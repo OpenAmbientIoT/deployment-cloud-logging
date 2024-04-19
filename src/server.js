@@ -7,21 +7,40 @@ const { WiliotPublicKeysArray } = require('./AuthenticationKeys'); // Adjust the
 // Initialize Cloud Logging client
 const logging = new Logging();
 const log = logging.log('websocket-server-log');
-
-const metadata = {
-    resource: {type: 'global'}, // see the documentation for other resource types
-};
+const resource = { type: 'global' }; // You might adjust this based on your actual resource type in GCP
 
 // Function to write an entry to Cloud Logging
-function writeToLog(severity, message) {
-    // const entry = log.entry(metadata, {
-    //     severity: severity,
-    //     message: message,
-    // });
-    // log.write(entry).catch(console.error);
+function writeToLog(severity, message, data, userId) {
+    const timestamp = new Date().toISOString();
+    const jsonPayload = {
+        message: message,
+        ...data,
+    };
+    // Prepare the log entry metadata
+    const entryMetadata = {
+        resource: resource,
+        timestamp: timestamp,
+        severity: severity.toUpperCase(), // Ensure severity is always in uppercase as expected by GCP
 
-    console.log(`${severity}: ${message}`);
+    };
+
+    // Prepare the jsonPayload for structured logging
+    const payload = {
+        resource: resource,
+        timestamp: timestamp,
+        jsonPayload: jsonPayload,
+        labels: {
+            userId: userId || 'unknown', // Include user ID in labels for easier filtering
+        },
+        message: jsonPayload.message? jsonPayload.message : 'No message',
+    }
+    // Create the log entry with jsonPayload
+    const entry = log.entry(entryMetadata, payload);
+    log.write(entry).catch(console.error);
 }
+
+
+
 
 
 // Flag to enable/disable token validation
@@ -30,17 +49,13 @@ let validateTokens = true;
 // Function to validate the access token
 async function validateAccessToken(token) {
     try {
-        console.log('Token:', token);
         const keyStore = await jose.JWK.asKeyStore(WiliotPublicKeysArray);
-        console.log('Key store:', keyStore);
         const result = await jose.JWS.createVerify(keyStore).verify(token);
-        console.log('Token verification result:', result);
         const payload = JSON.parse(result.payload.toString());
-        console.log('Token payload:', payload);
-
         return { isValid: true, data: payload }; // Token is valid
     } catch (error) {
         console.error('Token validation error:', error);
+        writeToLog('CRITICAL', 'Token validation error', { error: error })
         return { isValid: false, data: {} }; // Token is invalid
     }
 }
@@ -48,12 +63,12 @@ async function validateAccessToken(token) {
 // WebSocket Server Setup
 const wss = new WebSocket.Server({ port: 8081 });
 console.log('WebSocket server started on port 8081');
+writeToLog('INFO', 'WebSocket server started on port 8081');
 
 wss.on('connection', async (ws, req) => {
+    writeToLog('INFO', 'New WebSocket connection initiated');
     if (validateTokens) {
-        // Extract token from URL query parameter
         const accessToken = new URL(req.url, `http://${req.headers.host}`).searchParams.get('token');
-
         if (!accessToken) {
             ws.close(1008, 'Access token is missing');
             writeToLog('ERROR', 'Access token is missing');
@@ -62,20 +77,14 @@ wss.on('connection', async (ws, req) => {
 
         const validationResponse = await validateAccessToken(accessToken);
         writeToLog('INFO', `Token validation response: ${JSON.stringify(validationResponse)}`);
-        console.log('Token validation response:', validationResponse);
-
         if (!validationResponse.isValid) {
             ws.close(1008, 'Invalid access token');
             writeToLog('ERROR', 'Invalid access token');
             return;
         }
-
-        // Further validation can be added here (e.g., checking token expiration)
     }
 
-    // Event listener for messages from the client
     ws.on('message', async (message) => {
-        // Assume the message type is included in the message, e.g., { type: 'error', data: 'Error details' }
         let logMessage;
         try {
             logMessage = JSON.parse(message);
@@ -84,67 +93,57 @@ wss.on('connection', async (ws, req) => {
             return;
         }
 
-        if (logMessage.type === 'reauth') {
-            const newToken = logMessage.token;
-            const validationResponse = await validateAccessToken(newToken);
+        const { type, message: logMsg, data, userId } = logMessage;
+        let finalType = type.toLowerCase(); // Default to the type specified in the message
 
-            if (validationResponse.isValid) {
-                writeToLog('INFO', 'Re-authentication successful');
-                // Here, update any session or connection state as necessary
-                // For example, you might associate the new token with the connection
-                ws.authToken = newToken; // Example: Storing the new token in the WebSocket object
-            } else {
-                writeToLog('ERROR', 'Re-authentication failed: Invalid token');
-                // Handle invalid token during re-authentication
-                // For example, you might choose to close the connection
-                ws.close(1008, 'Re-authentication failed: Invalid token');
-            }
-
-            return; // Skip processing this message further
+        // Check if the message content contains specific keywords
+        if (logMsg && (logMsg.includes("CRITICAL") || logMsg.includes("ALERT"))) {
+            finalType = logMsg.includes("CRITICAL") ? 'CRITICAL' : 'ALERT';
         }
 
+        // Now call writeToLog with the potentially adjusted log type
+        writeToLog(finalType.toUpperCase(), logMsg, data, userId);
 
 
-        switch (logMessage.type) {
+        //Uncomment the following lines if you want to log the received messages to the console and for debugging purposes
+
+        // console.log('Received message:', {
+        //     type: type,
+        //     message: logMsg,
+        //     data: data,
+        //     userId: userId,
+        // });
+
+        switch (type.toLowerCase()) {
+            case 'reauth':
+                const validationResponse = await validateAccessToken(data.token);
+                if (validationResponse.isValid) {
+                    writeToLog('INFO', 'Re-authentication successful');
+                    ws.authToken = data.token;  // Storing the new token
+                } else {
+                    writeToLog('ERROR', 'Re-authentication failed: Invalid token');
+                    ws.close(1008, 'Re-authentication failed: Invalid token');
+                }
+                break;
             case 'error':
-                // Log as an error
-                writeToLog('ERROR', `Error reported by client: ${logMessage.data}`);
-                break;
             case 'warning':
-                // Log as a warning
-                writeToLog('WARNING', `Warning reported by client: ${logMessage.data}`);
-                break;
             case 'info':
-                // Log as an info
-                writeToLog('INFO', `Info message from client: ${logMessage.data}`);
-                break;
-
             case 'critical':
-                // Log as a critical error
-                writeToLog('CRITICAL', `Critical error reported by client: ${logMessage.data}`);
-                break;
-
             case 'alert':
-                // Log as an alert
-                writeToLog('ALERT', `Alert from client: ${logMessage.data}`);
-                break;
-
             case 'debug':
-                // Log as a debug message
-                writeToLog('DEBUG', `Debug message from client: ${logMessage.data}`);
+                // writeToLog(type, logMessage.message, data, userId);
                 break;
-            // Add more cases as needed
             default:
-                // Log as a default info or debug message
-                writeToLog('DEFAULT', `Received message: ${message}`);
+                writeToLog('INFO', `Unhandled message type: ${message}`);
                 break;
         }
     });
 
-    // Send a confirmation message to the client
+    // Confirm the connection
     ws.send('WebSocket connection established');
     writeToLog('INFO', 'WebSocket connection established');
 });
+
 
 // Function to toggle token validation
 function toggleTokenValidation(enable) {
@@ -152,5 +151,5 @@ function toggleTokenValidation(enable) {
     validateTokens = enable;
 }
 
-// Toggle token validation based on your needs
-toggleTokenValidation(true); // Enable or disable as needed
+toggleTokenValidation(true);  // You can set this based on your application needs
+
